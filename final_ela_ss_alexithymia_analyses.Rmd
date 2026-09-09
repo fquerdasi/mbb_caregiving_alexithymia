@@ -1,0 +1,1535 @@
+---
+title: "final_mbb_alexithymia_analyses"
+author: "FQ"
+date: "2026-04-21"
+output: html_document
+---
+Final sharing version of script for paper: <title>
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Setup
+## load libraries
+```{r}
+suppressPackageStartupMessages({
+  library(sjPlot)
+  library(ggplot2)
+  library(tidyverse)
+  library(car) #for ANCOVA
+  library(stats) #for ANOVA
+  library(multcomp) #for ANCOVA pairwise comparisons
+  library(ggsignif) #for significance stars on graphs
+  library(ggformula) #for regression diagnostics
+  library(ggExtra) #for marginal distributions on scatterplot
+  library(Hmisc) # for many histograms at once
+  library(lavaan) # for SEM LGM modeling
+  library(multiplex) # for writing .dat files
+  library(patchwork) # for combining plots
+  library(haven) # for reading in SAV files
+  library(lavaanPlot)
+  library(corrplot) # for correlation matrices
+  library(lme4)
+  library(gtsummary) # for descriptive stats
+  library(gt) # for saving tables
+  library(rstatix)
+})
+```
+
+## load data
+```{r}
+data <- read_csv("ela_ss_alexithymia_data.csv")
+
+# updated alexithymia data pulled in wrangling script already has this
+#alexi_w1 <- read_csv("../../Wave_1/Data_scoring/Alexithymia/alexithymia_scores_w1_20231017.csv") %>% dplyr::select(participant_id, contains("idcom"))
+
+# alexithymia w3 data 
+alexi_w3 <- read_csv("../../Wave_3/Data_scoring/alexithymia/alexithymia_scores_items_w3_20250523.csv")
+
+# age at w3
+demo3 <- read_csv("../../Wave_3/Data_scoring/demographics/demographics_clean_w3_20250527.csv") %>% 
+  dplyr::select(
+    participant_id,
+    child_age_w3 = child_age_years_w3
+  )
+
+# primary caregiver education, income-to-needs relative to federal poverty line
+demo_w1 <- read_csv("../../Wave_1/Data_scoring/demographics_parentproxy/demographics_clean_w1.csv") %>%
+  dplyr::select(
+    participant_id,
+    federal_income_needs_primary_w1,
+    primary_household_income_w1,
+    primary_cg_education_w1
+  )
+
+# merge alexithymia w3 with rest of data
+data <- data %>% dplyr::left_join(alexi_w3, by = "participant_id") %>% dplyr::left_join(demo3, by = "participant_id") %>% dplyr::left_join(demo_w1, by = "participant_id")
+
+# read in new fci data 
+fcinew <- read_csv("../../FCI_W1_W3_consolidation/fci_consolidated_final.csv") %>%
+  dplyr::select(
+    participant_id,
+    num_transitions,
+    age_left_bio_years,
+    age_enter_stable_care_years,
+    fci_timepoint
+  ) %>%
+  dplyr::rename(
+    num_transitions_new = num_transitions,
+    age_left_bio_years_new = age_left_bio_years,
+    age_enter_stable_care_years_new = age_enter_stable_care_years
+  )
+
+data <- data %>%
+  left_join(fcinew, by = "participant_id")
+
+microfims <- read_csv("../../FIMS_microcoding/data/individual GSEQ yules q merged_validity_additional.csv") %>%
+  dplyr::select(
+    participant_id,
+    pactive.cpositi,
+    cactive.ppositi,
+    pactive.cneutra,
+    # possible covariates
+    proportion_active_primary_parent,
+    proportion_positive_primary_parent,
+    proportion_active_primary_child,
+    proportion_positive_primary_child
+  )
+
+# merge w old data
+data <- data %>%
+  left_join(microfims, by = "participant_id")
+
+# descriptives: missing data rates, distributions, and associations w covariates for microfims
+data %>% dplyr::count(!is.na(pactive.cpositi)) # N=143 have, 20 don't
+
+# how many people have both alexi w1 and w3?
+data %>% dplyr::count(!is.na(alex_idcom_mean_score_w3) & !is.na(alex_idcom_mean_score_w1)) # 72 with both 
+
+ppositivcores <- read_csv("../../../../Jenn/caregiver FIMS positive CFAs/ppositivescores_negtask.csv") %>% dplyr::select(numid, ppositive, ppositive_se)
+
+ppositivecommscores <- read_csv("../../../../Jenn/caregiver FIMS positive CFAs/ppositivecomscores_negtask.csv") %>% dplyr::select(numid, poscom, poscom_se)
+
+fims_factors <- ppositivcores %>% full_join(ppositivecommscores, by = "numid")  
+
+# add 0s to numid (001-009, 010-099, 100-163)
+fims_factors <- fims_factors %>% 
+  dplyr::mutate(
+    numid = case_when(
+      numid < 10 ~ str_c("00", as.character(numid), sep=""),
+      numid >= 10 & numid < 100 ~ str_c("0", as.character(numid), sep=""),
+      numid >= 100 ~ as.character(numid)
+    )
+  )
+
+# now, add "MBB" to front of numid to make it into participant_id
+fims_factors <- fims_factors %>% 
+  dplyr::mutate(
+    participant_id = str_c("MBB", numid, sep="")
+  ) 
+
+# merge factor scores w rest of data 
+data <- data %>% left_join(fims_factors, by = "participant_id") %>% dplyr::select(-numid)
+```
+
+# Preliminary data cleaning
+## Add variable for days between w1 and w3, years in stable care
+```{r}
+data <- data %>% 
+  dplyr::mutate(
+    years_between_w3_w1 = child_age_w3 - child_age_years_w1,
+    days_since_w1_w3 = as.numeric(duration(years = years_between_w3_w1), "days")
+  )
+
+data %>% dplyr::count(!is.na(child_age_w3)) # only 76 people have age at w3
+
+data <- data %>% 
+  dplyr::mutate(
+    years_in_stable_care = ifelse(ELA_group_w1==1, child_age_years_w1-age_enter_stable_care_years, child_age_years_w1),
+    years_in_stable_care_new = ifelse(ELA_group_w1==1, child_age_years_w1-age_enter_stable_care_years_new, child_age_years_w1)
+    )
+```
+
+## Add child race/ethnicity, in-person vs remote
+```{r}
+# add in child race and ethnicity data
+cg_race <- read_csv("../../Wave_1/Data_scoring/demographics_parentproxy/demographics_clean_w1.csv") %>%
+  dplyr::select(
+    participant_id,
+    primarycaregiver_race = primarycaregiver_race_w1,
+    primarycaregiver_latinx = primarycaregiver_latinx_w1
+  )
+
+# read in list of in-person participants, make a variable to index in person
+w1_inperson <- read_csv("../../Wave_1/Data_clean/wave_1_in_person_data_clean.csv") %>% dplyr::select(
+  participant_id
+) %>% dplyr::mutate(
+  format = "inperson"
+)
+
+# merge with rest of the data
+data <- data %>% left_join(cg_race, by = "participant_id") %>% left_join(w1_inperson, by = "participant_id")
+
+# clean up the added vars
+data <- data %>% dplyr::mutate(
+  format = ifelse(is.na(format), "remote", format)
+) %>% 
+  dplyr::rename(child_race = child_race_w1)
+
+# check race vars have been cleaned already -- yes
+#unique(data$child_race)
+#unique(data$primarycaregiver_race)
+
+# make combined race/ethnicity 2 category variable for statistical analysis
+data <- data %>% dplyr::mutate(
+  child_race_ethnicity = case_when(
+    child_race=="White_not_Latinx" & (child_latinx_w1==0 | is.na(child_latinx_w1)) ~ "White_not_Hispanic",
+    is.na(child_race) & child_latinx_w1==0 ~ "White_not_Hispanic",
+    child_race != "White_not_Latinx" | child_latinx_w1==1 ~ "POC_andor_Hispanic",
+    is.na(child_race) & is.na(child_latinx_w1) ~ NA_character_
+  ),
+  primarycg_race_ethnicity = case_when(
+    primarycaregiver_race=="White_not_Latinx" & (primarycaregiver_latinx==0 | is.na(primarycaregiver_latinx)) ~ "White_not_Hispanic",
+    is.na(primarycaregiver_race) & primarycaregiver_latinx==0 ~ "White_not_Hispanic",
+    primarycaregiver_race != "White_not_Latinx" | primarycaregiver_latinx==1 ~ "POC_andor_Hispanic",
+    is.na(primarycaregiver_race) & is.na(primarycaregiver_latinx) ~ NA_character_
+  )
+)
+
+data %>% dplyr::count(!is.na(child_race_ethnicity)) # 27 are missing child race ethnicity
+data %>% dplyr::count(!is.na(child_race)) # 30 are missing race
+data %>% dplyr::count(!is.na(child_latinx_w1)) # 34 are missing latinx
+```
+
+# Data exploration
+## Variable distributions and outlier investigation
+```{r}
+primary_vars <- sample %>%
+  dplyr::select(alex_idcom_mean_score_w1, ss_score_w1, poscom, ppositive, pactive.cpositi, years_in_stable_care_new, alex_idcom_mean_score_w3)
+
+hist.data.frame(primary_vars)
+
+# identify outliers-- boxplot method
+identify_outliers(sample, alex_idcom_mean_score_w1) # no outliers
+identify_outliers(sample, ss_score_w1) # no outliers
+identify_outliers(sample, poscom) %>%
+  dplyr::select(participant_id, ELA_group_w1, alex_idcom_mean_score_w1, poscom, is.outlier, is.extreme) #5 outliers 
+
+poscom_outlier_ids <- identify_outliers(sample, poscom) %>%
+  dplyr::select(participant_id)
+
+identify_outliers(sample, ppositive)  %>%
+  dplyr::select(participant_id, ELA_group_w1, ppositive, is.outlier, is.extreme) # 3 outliers
+
+ppos_outlier_ids <- identify_outliers(sample, ppositive) %>%
+  dplyr::select(participant_id)
+
+identify_outliers(sample, pactive.cpositi) %>%
+  dplyr::select(participant_id, ELA_group_w1, pactive.cpositi, is.outlier, is.extreme) # 2 outliers
+
+conting_outlier_ids <- identify_outliers(sample, pactive.cpositi) %>%
+  dplyr::select(participant_id)
+
+identify_outliers(sample, years_in_stable_care_new) # no outliers
+
+identify_outliers(sample, alex_idcom_mean_score_w3) #  no outliers
+```
+
+## Descriptive statistics
+```{r}
+# create dataset with manuscript sample: children who have baseline alexithymia data
+sample <- data %>% 
+  dplyr::filter(!is.na(alex_idcom_mean_score_w1))
+
+# numbers in pre-, early-, mid-, late- adolescence in each wave
+# pre: less than 10 years old; early: 10-12; mid: 13-15; late: 16-18
+sample <- sample %>%
+  mutate(
+    adolescence_stage_w1 = case_when(
+      child_age_years_w1 < 10 ~ "Pre-adolescence (<10)",
+      child_age_years_w1 >= 10 & child_age_years_w1 < 13 ~ "Early adolescence (10–12)",
+      child_age_years_w1 >= 13 & child_age_years_w1 < 16 ~ "Mid-adolescence (13–15)",
+      child_age_years_w1 >= 16 & child_age_years_w1 <= 18 ~ "Late adolescence (16–18)",
+      TRUE ~ NA_character_
+    ),
+    adolescence_stage_w3 = case_when(
+      child_age_w3 < 10 ~ "Pre-adolescence (<10)",
+      child_age_w3 >= 10 & child_age_w3 < 13 ~ "Early adolescence (10–12)",
+      child_age_w3 >= 13 & child_age_w3 < 16 ~ "Mid-adolescence (13–15)",
+      child_age_w3 >= 16 & child_age_w3 <= 18 ~ "Late adolescence (16–18)",
+      TRUE ~ NA_character_
+  )
+  )
+
+# number of families in sample
+length(unique(sample$family_id))
+
+# all demo variables -- full sample
+demo <- sample %>%
+  mutate(
+    primary_cg_education_w1 = factor(primary_cg_education_w1, levels = c("highschool", "tech/vocational_school", "some_college", "associates degree", "bachelors_degree", "graduate_degree")),
+    adolescence_stage_w1 = factor(adolescence_stage_w1, levels = c("Pre-adolescence (<10)", "Early adolescence (10–12)", "Mid-adolescence (13–15)", "Late adolescence (16–18)")),
+    adolescence_stage_w3 = factor(adolescence_stage_w3, levels = c("Pre-adolescence (<10)", "Early adolescence (10–12)", "Mid-adolescence (13–15)", "Late adolescence (16–18)"))
+  ) %>% 
+  tbl_summary(include = c(ELA_group_w1, ela_3subgroup_str, format, child_race, child_race_ethnicity, child_sex_w1, primary_cg_education_w1, child_age_years_w1, primarycaregiver_race, federal_income_needs_primary_w1, adolescence_stage_w1, adolescence_stage_w3, alex_idcom_mean_score_w1, ss_score_w1, alex_idcom_mean_score_w3, ppositive, poscom, pactive.cpositi),
+              statistic = list(
+                all_continuous() ~ "{mean} ({sd}); Range: {min} - {max}"
+    ))
+
+table1a <- as_gt(demo) 
+gtsave(table1a, filename = "figures/demos.docx")
+
+# number missing caregiver-child interaction videos
+sample %>% dplyr::count(!is.na(ppositive) & !is.na(poscom)) # 3 missing caregiver-child interaction data
+sample %>% dplyr::count(!is.na(ss_score_w1)) # all complete
+sample %>% dplyr::count(!is.na(years_in_stable_care_new)) # 10 missing
+
+# demo variables -- by group
+demo_groups <- sample %>%
+  mutate(
+    primary_cg_education_w1 = factor(primary_cg_education_w1, levels = c("highschool", "tech/vocational_school", "some_college", "associates degree", "bachelors_degree", "graduate_degree")),
+    adolescence_stage_w1 = factor(adolescence_stage_w1, levels = c("Pre-adolescence (<10)", "Early adolescence (10–12)", "Mid-adolescence (13–15)", "Late adolescence (16–18)")),
+    adolescence_stage_w3 = factor(adolescence_stage_w3, levels = c("Pre-adolescence (<10)", "Early adolescence (10–12)", "Mid-adolescence (13–15)", "Late adolescence (16–18)"))
+  ) %>% 
+  tbl_summary(by = ELA_group_w1, include = c(ELA_group_w1, ela_3subgroup_str, format, child_race, child_race_ethnicity, child_sex_w1, primary_cg_education_w1, child_age_years_w1, primarycaregiver_race, federal_income_needs_primary_w1, adolescence_stage_w1, adolescence_stage_w3, alex_idcom_mean_score_w1, alex_idcom_mean_score_w3, ss_score_w1, years_in_stable_care_new, ppositive, poscom, pactive.cpositi),
+              statistic = list(
+                all_continuous() ~ "{mean} ({sd}); Range: {min} - {max}"
+    ))
+
+table1b <- as_gt(demo_groups) 
+gtsave(table1b, filename = "figures/demos_groups.docx")
+
+# crEA group differences
+t.test(child_age_years_w1 ~ ELA_group_w1, data = sample)
+
+chisq.test(sample$child_sex_w1, sample$ELA_group_w1)
+
+chisq.test(sample$child_race, sample$ELA_group_w1)
+
+chisq.test(sample$primary_cg_education_w1, sample$ELA_group_w1)
+
+chisq.test(sample$format, sample$ELA_group_w1)
+
+chisq.test(sample$primarycaregiver_race, sample$ELA_group_w1)
+tab <- table(sample$primarycaregiver_race, sample$ELA_group_w1)
+pairwise.prop.test(tab, p.adjust.method = "bonferroni")
+
+sample_ela <- sample %>% dplyr::filter(ELA_group_w1==1)
+sample_comp <- sample %>% dplyr::filter(ELA_group_w1==0)
+
+sample_ela %>% group_by(primarycaregiver_race) %>% summarise(n = n()) %>%
+  mutate(freq = round(n / sum(n), digits=2)) %>% arrange(desc(n)) # 72% white
+
+sample_comp %>% group_by(primarycaregiver_race) %>% summarise(n = n()) %>%
+  mutate(freq = round(n / sum(n), digits=2)) %>% arrange(desc(n)) # 24% Asian
+
+t.test(federal_income_needs_primary_w1 ~ ELA_group_w1, data = sample)
+
+chisq.test(sample$tesi_lifetime, sample$ELA_group_w1)
+
+t.test(leq_lifetime ~ ELA_group_w1, data = sample)
+
+t.test(leq_recent_T1 ~ ELA_group_w1, data = sample)
+
+t.test(tesi_recent_T1 ~ ELA_group_w1, data = sample)
+
+sample %>% dplyr::count(!is.na(federal_income_needs_primary_w1)) # 100 out of 158 have this info
+sample %>% dplyr::count(!is.na(primary_household_income_w1)) # 104 have income
+
+t.test(alex_idcom_mean_score_w1 ~ ELA_group_w1, data=sample)
+t.test(alex_idcom_mean_score_w3 ~ ELA_group_w1, data=sample)
+t.test(ss_score_w1 ~ ELA_group_w1, data=sample)
+t.test(ppositive ~ ELA_group_w1, data=sample)
+t.test(poscom ~ ELA_group_w1, data=sample)
+t.test(pactive.cpositi ~ ELA_group_w1, data=sample)
+
+# format differences in primary study variables
+t.test(alex_idcom_mean_score_w1 ~ format, data=sample)
+t.test(alex_idcom_mean_score_w3 ~ format, data=sample)
+t.test(ss_score_w1 ~ format, data=sample)
+t.test(ppositive ~ format, data=sample) # sig
+t.test(poscom ~ format, data=sample) # sig
+t.test(pactive.cpositi ~ format, data=sample)
+```
+
+## Differences in drop-out according to demographics
+```{r}
+# check
+sample %>% dplyr::count(is.na(alex_idcom_pct_complete_w3))
+
+# create dropped out variable
+sample <- sample %>%
+  mutate(
+    droppedout = ifelse(is.na(alex_idcom_pct_complete_w3), 1, 0)
+  )
+
+sample_ela <- sample_ela  %>%
+  mutate(
+    droppedout = ifelse(is.na(alex_idcom_pct_complete_w3), 1, 0)
+  )
+
+sample_comp <- sample_comp  %>%
+  mutate(
+    droppedout = ifelse(is.na(alex_idcom_pct_complete_w3), 1, 0)
+  )
+
+# group, child sex, race, primary caregiver education, primary caregiver race, income-to-needs
+chisq.test(sample$ELA_group_w1, sample$droppedout) # ns
+chisq.test(sample$child_sex_w1, sample$droppedout) # ns
+chisq.test(sample$child_race_ethnicity, sample$droppedout) # ns
+chisq.test(sample$primary_cg_education_w1, sample$droppedout) #ns
+chisq.test(sample$primarycg_race_ethnicity, sample$droppedout) # ns
+t.test(federal_income_needs_primary_w1 ~ droppedout, data = sample) # ns
+
+# variables of interst
+t.test(alex_idcom_mean_score_w1 ~ droppedout, data = sample) # ns
+t.test(ss_score_w1 ~ droppedout, data = sample) # ns
+t.test(poscom ~ droppedout, data = sample) # ns
+t.test(ppositive ~ droppedout, data = sample) # ns (p = .055)
+t.test(pactive.cpositi ~ droppedout, data = sample) # ns
+
+# variables of interest by group -- ela first
+t.test(alex_idcom_mean_score_w1 ~ droppedout, data = sample_ela) # ns
+t.test(ss_score_w1 ~ droppedout, data = sample_ela) # ns
+t.test(poscom ~ droppedout, data = sample_ela) # ns
+t.test(ppositive ~ droppedout, data = sample_ela) # ns 
+t.test(pactive.cpositi ~ droppedout, data = sample_ela) # ns
+t.test(years_in_stable_care_new ~ droppedout, data=sample_ela)
+
+# comp group
+t.test(alex_idcom_mean_score_w1 ~ droppedout, data = sample_comp) # ns
+t.test(ss_score_w1 ~ droppedout, data = sample_comp) # ns
+t.test(poscom ~ droppedout, data = sample_comp) # ns
+t.test(ppositive ~ droppedout, data = sample_comp) # ns 
+t.test(pactive.cpositi ~ droppedout, data = sample_comp) # ns
+
+# recollected fci vs w1 fci
+sample %>% dplyr::count(fci_timepoint.y)
+
+# differences in years in stable care based on reporting timepoint?
+chisq.test(sample$fci_timepoint.y, sample$years_in_stable_care_new) # ns
+chisq.test(sample$fci_timepoint.y, sample$num_transitions_new) # ns
+```
+
+### Table: differences in primary study variables based on drop-out
+```{r}
+# Variables to test
+vars <- c("alex_idcom_mean_score_w1", "ss_score_w1", "poscom", "ppositive", "pactive.cpositi") 
+
+# Function to run t-tests and format results
+get_ttest_results <- function(data, vars, group_var = "droppedout") {
+  sapply(vars, function(v) {
+    
+    # Formula for t.test
+    formula <- as.formula(paste(v, "~", group_var))
+    
+    # Run t-test
+    tt <- t.test(formula, data = data)
+    
+    # Extract values
+    t_val <- unname(tt$statistic)
+    df <- unname(tt$parameter)
+    p <- tt$p.value
+    
+    # Format p-value
+    p_text <- if (p < .001) {
+      "< .001"
+    } else {
+      sprintf("= %.3f", p)
+    }
+    
+    # Create formatted string
+    sprintf("t(%.1f) = %.2f, p %s",
+            df,
+            t_val,
+            p_text)
+  })
+}
+
+# Create the summary table
+results_table <- data.frame(
+  Variable = vars,
+  full_sample = get_ttest_results(sample, vars),
+  crea_group = get_ttest_results(sample_ela, vars),
+  comp_group = get_ttest_results(sample_comp, vars),
+  row.names = NULL,
+  check.names = FALSE
+)
+
+results_table
+
+write_csv(results_table, "figures/tables1_dropout.csv")
+```
+
+
+## Reliability
+Alexithymia, security scale
+```{r}
+# tas: 
+# ident: 1, 3, 6, 7, 9, 13, 14
+# desc: 2, 4, 11, 12, 17
+# our alexithymia: 
+# ident: 1, 2, 3, 4, 6, 7
+# desc: 8, 9, 10, 11, 12, 
+
+# alexithymia w1
+alex_ident_items_w1 <- sample %>%
+  dplyr::select(alexithymia_1_w1:alexithymia_7_w1) %>%
+  drop_na()
+
+ltm::cronbach.alpha(alex_ident_items_w1, standardized=TRUE)
+
+alex_desc_items_w1 <- sample %>%
+  dplyr::select(alexithymia_8_w1:alexithymia_12_w1) %>%
+  drop_na()
+
+ltm::cronbach.alpha(alex_desc_items_w1, standardized=TRUE)
+
+# alexithymia w3
+alex_ident_items_w3 <- sample %>%
+  dplyr::select(alexithymia_1_w3:alexithymia_7_w3) %>%
+  drop_na()
+
+ltm::cronbach.alpha(alex_ident_items_w3, standardized=TRUE)
+
+alex_desc_items_w3 <- sample %>%
+  dplyr::select(alexithymia_8_w3:alexithymia_12_w3) %>%
+  drop_na()
+
+ltm::cronbach.alpha(alex_desc_items_w3, standardized=TRUE)
+
+# security scale
+ss_items <- sample %>%
+  dplyr::select(ss_1_score:ss_15_score) %>%
+  drop_na()
+
+ltm::cronbach.alpha(ss_items, standardized=TRUE)
+```
+
+## Missing data item level
+```{r}
+# security scale
+sample %>% dplyr::count(missing_count)
+
+# alexithymia baseline
+sample %>% dplyr::count(alex_ident_pct_complete_w1) # 7 items (6 out of 7 = 0.857; 5 out of 7 = 0.71)
+sample %>% dplyr::count(alex_comm_pct_complete_w1) # 5 items (80% = 4/5)
+
+sample <- sample %>%
+  dplyr::mutate(
+    alex_idcom_pct_complete_w1 = (alex_ident_pct_complete_w1 + alex_comm_pct_complete_w1) /2
+  )
+
+sample %>% dplyr::count(alex_idcom_pct_complete_w1) # 11/12, 10/12, 9/12
+
+# alexithymia followup
+sample %>% dplyr::count(alex_idcom_pct_complete_w3) # 12 items (0.91 = 11/12)
+```
+
+
+## Bivariate correlations table
+Years in stable care, Alexithymia W1, Alexithymia W3, Security Scale, poscom, ppositive, pactive.cpositi
+```{r}
+cont_vars <- sample %>% dplyr::select(ppositive, poscom, pactive.cpositi, years_in_stable_care_new, alex_idcom_mean_score_w1, alex_idcom_mean_score_w3, ss_score_w1) %>% drop_na()
+
+testRes = cor.mtest(cont_vars, conf.level = 0.95)
+M = cor(cont_vars)
+corrplot(M, p.mat = testRes$p, sig.level = 0.05, order = 'hclust', addrect = 2) # physical contact, supportive, positive/warm, and warmth are negatively correlated with age
+
+corrplot(M,
+         method = "number",   # show correlation values only
+         type = "upper",
+         order = "hclust",
+         addrect = 2)
+
+# years in stable care correlations -- ELA group only
+cor.test(sample_ela$alex_idcom_mean_score_w1, sample_ela$years_in_stable_care_new)
+cor.test(sample_ela$alex_idcom_mean_score_w3, sample_ela$years_in_stable_care_new)
+cor.test(sample_ela$ss_score_w1, sample_ela$years_in_stable_care_new)
+cor.test(sample_ela$ppositive, sample_ela$years_in_stable_care_new)
+cor.test(sample_ela$poscom, sample_ela$years_in_stable_care_new)
+cor.test(sample_ela$pactive.cpositi, sample_ela$years_in_stable_care_new)
+
+# age and alexithymia at baseline in crEA group only
+cor.test(sample_ela$alex_idcom_mean_score_w1, sample_ela$child_age_years_w1)
+
+# get other p-values for chart
+cor.test(sample$alex_idcom_mean_score_w1, sample$alex_idcom_mean_score_w3)
+cor.test(sample$alex_idcom_mean_score_w1, sample$ss_score_w1)
+cor.test(sample$alex_idcom_mean_score_w3, sample$ss_score_w1)
+
+desc <- sample %>%
+  tbl_summary(include = c(ppositive, poscom, pactive.cpositi, years_in_stable_care, alex_idcom_mean_score_w1, alex_idcom_mean_score_w3, ss_score_w1),
+              statistic = list(
+                all_continuous() ~ "{mean} ({sd})"
+    ))
+
+table2 <- as_gt(desc) 
+gtsave(table2, filename = "figures/desc_stats.docx")
+
+mean(sample_ela$years_in_stable_care, na.rm=TRUE) #7.72
+sd(sample_ela$years_in_stable_care, na.rm=TRUE) #4.41
+```
+
+## Covariate selection: Alexithymia associations with race, sex, inperson vs. remote, age
+```{r}
+# alexithymia and age correlation
+cor.test(data$alex_idcom_mean_score_w1, data$child_age_years_w1, method = c("pearson")) #ns
+cor.test(data$alex_idcom_mean_score_w3, data$child_age_w3, method = c("pearson")) #ns
+
+# alexithymia t-test with sex, race/eth, and inperson vs. remote
+t.test(alex_idcom_mean_score_w1 ~ child_sex_w1, data = data,
+       alternative = c("two.sided"), mu=0, var.equal = FALSE,
+       conf.level = 0.95, paired = FALSE) #ns (p=.055), females higher
+t.test(alex_idcom_mean_score_w3 ~ child_sex_w1, data = data,
+       alternative = c("two.sided"), mu=0, var.equal = FALSE,
+       conf.level = 0.95, paired = FALSE) #ns
+
+t.test(alex_idcom_mean_score_w1 ~ child_race_ethnicity, data = data,
+       alternative = c("two.sided"), mu=0, var.equal = FALSE,
+       conf.level = 0.95, paired = FALSE) #sig (p=.044), white higher
+t.test(alex_idcom_mean_score_w3 ~ child_race_ethnicity, data = data,
+       alternative = c("two.sided"), mu=0, var.equal = FALSE,
+       conf.level = 0.95, paired = FALSE) #sig (p = .047), white higher
+
+t.test(alex_idcom_mean_score_w1 ~ format, data = data,
+       alternative = c("two.sided"), mu=0, var.equal = FALSE,
+       conf.level = 0.95, paired = FALSE) #ns
+
+# alexithymia anova with race
+summary(aov(alex_idcom_mean_score_w1 ~ child_race, data=data)) #ns
+alex_race_w3 <- aov(alex_idcom_mean_score_w3 ~ child_race, data=data)
+summary(alex_race_w3)# sig, p = .025
+TukeyHSD(alex_race_w3) # no sig pairwise differences
+
+data %>% dplyr::group_by(child_race) %>% dplyr::summarize(mean = mean(alex_idcom_mean_score_w3, na.rm=TRUE), n=n()) # black and Native american means are higher, but there are only 4 black children and 2 native
+
+data %>% dplyr::count(!is.na(alex_idcom_mean_score_w3) & child_race=="Black/AA") # only 2 black children have alexithymia in W3
+
+ggplot(data, aes(x = child_age_years_w1)) +
+  geom_histogram()
+
+data %>% dplyr::count(child_age_years_w1 < 10) # ~1/2 of the sample is younger than 10 at W1
+data %>% dplyr::count(child_age_w3 < 10) # but only 12 out of 76 are younger than 10 at W3
+```
+
+# Covariate selection: macroFIMS associations with race, sex, inperson vs. remote, age
+factors - pos/warm and social communication from *negative* task
+freq_pos_affect_mother_master_neg, intensity_freq_pos_affect_mother_master_neg, intensity_pos_affect_mother_master_neg, warmth_mother_master_neg, humor_mother_master_neg, physical_contact_mother_master_neg, supportive_mother_master_neg
+
+Jenn's writeup of factor analysis: Users/Jenn/caregiver FIMS positive CFAs
+```{r}
+# read in factor scores from Jenn's mplus analysis
+ppositivcores <- read_csv("../../../../Jenn/caregiver FIMS positive CFAs/ppositivescores_negtask.csv") %>% dplyr::select(numid, ppositive, ppositive_se)
+
+# "../../../../../Users/Jenn/caregiver FIMS positive CFAs/ppositivescores_negtask.csv"
+
+ppositivecommscores <- read_csv("../../../../Jenn/caregiver FIMS positive CFAs/ppositivecomscores_negtask.csv") %>% dplyr::select(numid, poscom, poscom_se)
+
+poscomscores_postask <- read_csv("../../../../Jenn/caregiver FIMS positive CFAs/poscomscores_positivetask_final.csv") %>% 
+  dplyr::select(numid, poscom, poscom_se) %>% 
+  dplyr::rename(poscom_postask = poscom,
+                poscom_se_postask = poscom_se)
+
+ppositive_postask <- read_csv("../../../../Jenn/caregiver FIMS positive CFAs/ppositivescores_postask_final.csv") %>% 
+  dplyr::select(numid, ppositive, ppositive_se) %>%
+  dplyr::rename(ppositive_postask = ppositive,
+                ppositive_se_postaxk = ppositive_se)
+
+fims_factors <- ppositivcores %>% full_join(ppositivecommscores, by = "numid")  %>% full_join(poscomscores_postask, by = "numid")  %>% full_join(ppositive_postask, by = "numid")
+
+# add 0s to numid (001-009, 010-099, 100-163)
+fims_factors <- fims_factors %>% 
+  dplyr::mutate(
+    numid = case_when(
+      numid < 10 ~ str_c("00", as.character(numid), sep=""),
+      numid >= 10 & numid < 100 ~ str_c("0", as.character(numid), sep=""),
+      numid >= 100 ~ as.character(numid)
+    )
+  )
+
+# now, add "MBB" to front of numid to make it into participant_id
+fims_factors <- fims_factors %>% 
+  dplyr::mutate(
+    participant_id = str_c("MBB", numid, sep="")
+  ) 
+
+# merge factor scores w rest of data 
+data <- data %>% left_join(fims_factors, by = "participant_id") %>% dplyr::select(-numid)
+
+# fims t-tests with sex, race/eth, and inperson vs. remote
+t.test(ppositive ~ child_sex_w1, data = data,
+       alternative = c("two.sided"), mu=0, var.equal = FALSE,
+       conf.level = 0.95, paired = FALSE) #ns
+t.test(poscom ~ child_sex_w1, data = data,
+       alternative = c("two.sided"), mu=0, var.equal = FALSE,
+       conf.level = 0.95, paired = FALSE) #ns
+
+t.test(ppositive ~ primarycg_race_ethnicity, data = data,
+       alternative = c("two.sided"), mu=0, var.equal = FALSE,
+       conf.level = 0.95, paired = FALSE) #ns
+t.test(poscom ~ primarycg_race_ethnicity, data = data,
+       alternative = c("two.sided"), mu=0, var.equal = FALSE,
+       conf.level = 0.95, paired = FALSE) # POC and/or hispanic lower (p=.004)
+
+t.test(ppositive ~ format, data = data,
+       alternative = c("two.sided"), mu=0, var.equal = FALSE,
+       conf.level = 0.95, paired = FALSE) # in-person higher (p=.01)
+t.test(poscom ~ format, data = data,
+       alternative = c("two.sided"), mu=0, var.equal = FALSE,
+       conf.level = 0.95, paired = FALSE) # in-person lower (p=.002)
+```
+Note: due to the differences by race/eth and format, we will add those as covariates to macroFIMS analyses
+
+# Alexithymia associations with child behavior in the tasks
+```{r}
+# alexithymia, child age, child neg affect, and child pos affect in correlation matrix
+child_affect <- data %>% dplyr::select(ppositive, poscom, childpostotal_negative, childnegtotal_negative, alex_idcom_mean_score_w1, child_age_years_w1) %>% drop_na()
+
+testRes = cor.mtest(child_affect, conf.level = 0.95)
+M = cor(child_affect)
+corrplot(M, p.mat = testRes$p, sig.level = 0.05, order = 'hclust', addrect = 2) # alexithymia and ppositive positively related to child positive affect in neg interaction, child negative affect negatively related to ppositive
+
+cor.test(data$alex_idcom_mean_score_w1, data$childpostotal_negative, method= c("pearson")) #r = .18, p = .026
+
+# associations w affect controlling for child age and sex
+child_pos_affect <- lm(alex_idcom_mean_score_w1 ~ childpostotal_negative + child_age_years_w1 + child_sex_w1, data = data)
+tab_model(child_pos_affect, vcov.fun = "CL", vcov.args = list(type="HC3", cluster = data$family_id), show.se=TRUE) # ns (p = 0.06)
+
+child_neg_affect <- lm(alex_idcom_mean_score_w1 ~ childnegtotal_negative + child_age_years_w1 + child_sex_w1, data = data)
+tab_model(child_neg_affect, vcov.fun = "CL", vcov.args = list(type="HC3", cluster = data$family_id), show.se=TRUE) #ns
+```
+
+# Aim 1: Alexithymia differences across Study Groups
+
+## Latent Growth Models: Baseline and Change Over Time Differences
+covariates: sex, age
+```{r}
+# LMM -- complete cases only
+# make a long format dataset with alexithymia and timepoint, security score, age at w1, sex
+ss_graph_long <- data %>%
+  dplyr::select(participant_id, ss_score_w1, alex_idcom_mean_score_w1, alex_idcom_mean_score_w3, child_sex_w1, child_age_years_w1, child_race_eth_bin, ELA_group_w1) %>%
+  pivot_longer(
+    cols = c(alex_idcom_mean_score_w1, alex_idcom_mean_score_w3),
+    names_to = "time",
+    values_to = "alex_idcom_mean_score"
+  ) %>% dplyr::mutate(
+    time = ifelse(time=="alex_idcom_mean_score_w1", "w1", "w3"),
+    time = factor(time, levels = c("w1", "w3"))
+  )
+
+# center variables
+ss_graph_long$ss_c <- scale(ss_graph_long$ss_score_w1, center = TRUE, scale = FALSE)[,1]
+ss_graph_long$age_c  <- scale(ss_graph_long$child_age_years_w1, center = TRUE, scale = FALSE)[,1]
+ss_graph_long$female_c <- scale(ifelse(ss_graph_long$child_sex_w1 == "female", 1, 0), center = TRUE, scale = FALSE)[,1]
+ss_graph_long$race_c <- scale(ss_graph_long$child_race_eth_bin, center = TRUE, scale = FALSE)[,1]
+ss_graph_long$ELA_group_c <- scale(ss_graph_long$ELA_group_w1, center = TRUE, scale = FALSE)[,1]
+
+groupchange_model <- lmerTest::lmer(
+  alex_idcom_mean_score ~ time * ELA_group_c + age_c + female_c + (1 | participant_id),
+  data = ss_graph_long
+)
+
+summary(groupchange_model)
+
+# latent growth model: FIML for missing data
+model_conditional <- '
+  # Growth factors
+  i =~ 1*alex_idcom_mean_score_w1 + 1*alex_idcom_mean_score_w3
+  s =~ 0*alex_idcom_mean_score_w1 + 1*alex_idcom_mean_score_w3
+
+  # Residual variance constrained equal (required with 2 timepoints)
+  alex_idcom_mean_score_w1 ~~ r*alex_idcom_mean_score_w1
+  alex_idcom_mean_score_w3 ~~ r*alex_idcom_mean_score_w3
+
+  # Caregiving and covariates predicting growth factors
+  i ~ ELA_group_w1 + child_age_years_w1 + child_sex_w1
+  s ~ ELA_group_w1 + child_age_years_w1 + child_sex_w1
+
+  # Covariance between growth factors (residual after prediction)
+  i ~~ s'
+
+fit_conditional <- growth(model_conditional,
+                          data = data,
+                          missing = "fiml",
+                          estimator = "MLR",
+                          cluster = "family_id")
+
+summary(fit_conditional, fit.measures = TRUE, estimates = TRUE, rsquare = TRUE, standardized=TRUE)
+
+# are the means different at T2?
+# center age and sex
+data$age_c  <- scale(data$child_age_years_w1, center = TRUE, scale = FALSE)[,1]
+data$female_c <- scale(ifelse(data$child_sex_w1 == "female", 1, 0), center = TRUE, scale = FALSE)[,1]
+
+model_followup <- '
+  i =~ 1*alex_idcom_mean_score_w1 + 1*alex_idcom_mean_score_w3
+  s =~ 0*alex_idcom_mean_score_w1 + 1*alex_idcom_mean_score_w3
+
+  alex_idcom_mean_score_w1 ~~ r*alex_idcom_mean_score_w1
+  alex_idcom_mean_score_w3 ~~ r*alex_idcom_mean_score_w3
+
+  i ~ b_cg*ELA_group_w1 + b_age*age_c + b_sex*female_c
+  s ~ g0*1 + g_cg*ELA_group_w1 + g_age*age_c + g_sex*female_c
+
+  i ~~ s
+  
+  # define mean intercept and slope for control group
+  i ~ i_mean*1
+  
+  # Define predicted T2 means for each group
+  # (at mean levels of covariates, i.e. age = 0, sex = 0 after centering)
+  # T2 = intercept + 1*slope  (because slope loading at T2 = 1)
+
+  T2_normative := i_mean + g0                        # caregiving = 0
+  T2_adverse   := (i_mean + b_cg) + (g0 + g_cg)     # caregiving = 1
+
+  # Difference between groups at T2
+  T2_diff := T2_adverse - T2_normative
+  
+  # define each slope for each group
+  slope_normative := g0 + g_cg*0
+  slope_adverse := g0 + g_cg*1
+'
+
+fit_followup <- growth(model_followup,
+                       data = data,
+                       missing = "fiml",
+                       estimator = "MLR",
+                       cluster = "family_id")
+
+summary(fit_followup, fit.measures = TRUE, estimates = TRUE, rsquare = TRUE, standardized=TRUE, ci = TRUE)
+standardizedSolution(fit_followup, type = "std.all", ci=TRUE, level = .95)
+```
+
+# Aim 2: Caregiver-Child Interaction Dynamics and Alexithymia
+
+## 2a: Time in Stable Care and Alexithymia
+### Correlation between time in stable care and number of transitions
+```{r}
+cor.test(sample_ela$years_in_stable_care_new, sample_ela$num_transitions_new) # more time in stable care -- fewer transitions
+```
+
+### Baseline differences only
+```{r}
+stablecare_transitions_alex_w1 <- lm(alex_idcom_mean_score_w1 ~ years_in_stable_care_new + num_transitions_new + child_age_years_w1 + child_sex_w1, data = sample_ela)
+tab_model(stablecare_transitions_alex_w1, show.std= "std", vcov.fun = "HC3", vcov.args = list(cluster = data_ela$family_id), show.se = TRUE) # years in stable care is significant; B = -0.48, p = .026
+# num transitions is marginal B = -0.29, p = .054
+
+# collinearity test
+library(car)
+vif(stablecare_transitions_alex_w1) # all lower than 3 
+
+model_timeinstablecare <- '
+  # Caregiving and covariates predicting growth factors
+  alex_idcom_mean_score_w1 ~ years_in_stable_care_new + num_transitions_new + child_age_years_w1 + child_sex_w1
+'
+
+fit_model_timeinstablecare <- sem(model_timeinstablecare,
+                              data = sample_ela,
+                              missing = "fiml",
+                              estimator = "MLR",
+                              cluster = "family_id")
+
+summary(fit_model_timeinstablecare, fit.measures = TRUE, estimates = TRUE, rsquare = TRUE, standardized=TRUE)
+standardizedSolution(fit_model_timeinstablecare, type = "std.all", ci=TRUE, level = .95)
+```
+
+## 2b: Attachment Security and Alexithymia
+### Latent Growth Model: Baseline and Change over time differences
+```{r}
+# complete cases only
+# make a long format dataset with alexithymia and timepoint, security score, age at w1, sex
+ss_graph_long <- data %>%
+  dplyr::select(participant_id, ss_score_w1, alex_idcom_mean_score_w1, alex_idcom_mean_score_w3, child_sex_w1, child_age_years_w1, child_race_eth_bin, ELA_group_w1) %>%
+  pivot_longer(
+    cols = c(alex_idcom_mean_score_w1, alex_idcom_mean_score_w3),
+    names_to = "time",
+    values_to = "alex_idcom_mean_score"
+  ) %>% dplyr::mutate(
+    time = ifelse(time=="alex_idcom_mean_score_w1", "w1", "w3"),
+    time = factor(time, levels = c("w1", "w3"))
+  )
+
+# center variables
+ss_graph_long$ss_c <- scale(ss_graph_long$ss_score_w1, center = TRUE, scale = FALSE)[,1]
+ss_graph_long$age_c  <- scale(ss_graph_long$child_age_years_w1, center = TRUE, scale = FALSE)[,1]
+ss_graph_long$female_c <- scale(ifelse(ss_graph_long$child_sex_w1 == "female", 1, 0), center = TRUE, scale = FALSE)[,1]
+ss_graph_long$race_c <- scale(ss_graph_long$child_race_eth_bin, center = TRUE, scale = FALSE)[,1]
+ss_graph_long$ELA_group_c <- scale(ss_graph_long$ELA_group_w1, center = TRUE, scale = FALSE)[,1]
+
+sschange_model <- lmerTest::lmer(
+  alex_idcom_mean_score ~ time * ss_c + ELA_group_c + age_c + female_c + (1 | participant_id),
+  data = ss_graph_long
+)
+
+summary(sschange_model)
+
+mean_ss <- mean(sample$ss_score_w1, na.rm=TRUE) # mean is 3.10
+sd(sample$ss_score_w1, na.rm=TRUE) # sd is 0.54
+sd1up_ss <- mean(sample$ss_score_w1, na.rm=TRUE) + sd(sample$ss_score_w1, na.rm=TRUE) # 3.65
+sd1down_ss <- mean(sample$ss_score_w1, na.rm=TRUE) - sd(sample$ss_score_w1, na.rm=TRUE) # 0.92
+
+# growth model with FIML for missing data
+model_ss_conditional <- '
+  # Growth factors
+  i =~ 1*alex_idcom_mean_score_w1 + 1*alex_idcom_mean_score_w3
+  s =~ 0*alex_idcom_mean_score_w1 + 1*alex_idcom_mean_score_w3
+
+  # Residual variance constrained equal (required with 2 timepoints)
+  alex_idcom_mean_score_w1 ~~ r*alex_idcom_mean_score_w1
+  alex_idcom_mean_score_w3 ~~ r*alex_idcom_mean_score_w3
+
+  # Caregiving and covariates predicting growth factors
+  i ~ bo*1 + b_ss*ss_score_w1 + b_group*ELA_group_w1 + b_age*child_age_years_w1 + b_sex*female + b_race*primarycg_poc
+  s ~ g1*1 + g_ss*ss_score_w1  + g_group*ELA_group_w1 + g_age*child_age_years_w1 + g_sex*female + g_race*primarycg_poc
+
+  # Covariance between growth factors (residual after prediction)
+  i ~~ s
+
+  # Predicted growth slope at each level of ss (holding age and sex at mean) 
+  slope_ss_low  := g1 + g_ss*0.92  + g_age*11.28 + g_sex*0.49 + g_race*0.5
+  slope_ss_mean := g1 + g_ss*3.10 + g_age*11.28 + g_sex*0.49 + g_race*0.5
+  slope_ss_high := g1 + g_ss*3.65 + g_age*11.28 + g_sex*0.49 + g_race*0.5'
+
+fit_ss_conditional <- growth(model_ss_conditional,
+                          data = sample,
+                          missing = "fiml",
+                          estimator = "MLR",
+                          cluster = "family_id")
+
+summary(fit_ss_conditional, fit.measures = TRUE, estimates = TRUE, rsquare = TRUE, standardized=TRUE)
+standardizedSolution(fit_ss_conditional, type = "std.all", ci=TRUE, level = .95)
+```
+
+## 2c: MacroFIMS and Alexithymia
+### Positive/Warm Parenting: Latent Growth Model: Baseline and Change over time differences
+```{r}
+sample <- sample %>%
+  mutate(female = ifelse(child_sex_w1 == "female", 1, 0),
+         primarycg_poc = ifelse(primarycg_race_ethnicity == "POC_andor_Hispanic", 1, 0))
+
+mean(sample$child_age_years_w1, na.rm=TRUE) #11.28
+mean(sample$female, na.rm=TRUE) # 0.49
+mean(sample$primarycg_poc, na.rm=TRUE) # 0.5
+
+model_ppositive <- '
+  # Growth factors
+  i =~ 1*alex_idcom_mean_score_w1 + 1*alex_idcom_mean_score_w3
+  s =~ 0*alex_idcom_mean_score_w1 + 1*alex_idcom_mean_score_w3
+
+  # Residual variance constrained equal (required with 2 timepoints)
+  alex_idcom_mean_score_w1 ~~ r*alex_idcom_mean_score_w1
+  alex_idcom_mean_score_w3 ~~ r*alex_idcom_mean_score_w3
+
+  # Caregiving and covariates predicting growth factors
+  i ~ bo*1 + b_pp*ppositive + b_group*ELA_group_w1 + b_age*child_age_years_w1 + b_sex*female + b_race*primarycg_poc + b_format*format
+  s ~ g1*1 + g_pp*ppositive  + g_group*ELA_group_w1 + g_age*child_age_years_w1 + g_sex*female + g_race*primarycg_poc + g_format*format
+
+  # Covariance between growth factors (residual after prediction)
+  i ~~ s
+
+  # Predicted growth slope at each level of pppositive (holding age and sex at mean) 
+  slope_pp_low  := g1 + g_pp*-0.945  + g_age*11.28 + g_sex*0.49 + g_race*0.5
+  slope_pp_mean := g1 + g_pp*-0.011 + g_age*11.28 + g_sex*0.49 + g_race*0.5
+  slope_pp_high := g1 + g_pp*0.921 + g_age*11.28 + g_sex*0.49 + g_race*0.5'
+  
+fit_ppositive <- growth(model_ppositive,
+                          data = sample,
+                          missing = "fiml",
+                          estimator = "MLR",
+                          cluster = "family_id")
+
+summary(fit_ppositive, fit.measures = TRUE, estimates = TRUE, rsquare = TRUE, standardized=TRUE)
+standardizedSolution(fit_ppositive, type = "std.all", ci=TRUE, level = .95)
+
+fscores_ppositive <- lavPredict(fit_ppositive, type = "lv")
+
+# run model without ppostivie outliers
+sample_noppos_out <- sample %>%
+  dplyr::filter(!(participant_id %in% ppos_outlier_ids$participant_id))
+
+
+fit_ppositive_noout <- growth(model_ppositive,
+                          data = sample_noppos_out,
+                          missing = "fiml",
+                          estimator = "MLR",
+                          cluster = "family_id")
+summary(fit_ppositive_noout, fit.measures = TRUE, estimates = TRUE, rsquare = TRUE, standardized=TRUE) # no longer effect
+
+# graph effect on slope to visualize
+# make a long format dataset with alexithymia and timepoint, ppositive, age at w1, sex, race/ethnicity
+ppositive_graph_long <- data %>%
+  dplyr::select(participant_id, ppositive, alex_idcom_mean_score_w1, alex_idcom_mean_score_w3, child_sex_w1, child_age_years_w1, primarycg_race_ethnicity, ELA_group_w1) %>%
+  pivot_longer(
+    cols = c(alex_idcom_mean_score_w1, alex_idcom_mean_score_w3),
+    names_to = "time",
+    values_to = "alex_idcom_mean_score"
+  ) %>% dplyr::mutate(
+    time = ifelse(time=="alex_idcom_mean_score_w1", "w1", "w3"),
+    time = factor(time, levels = c("w1", "w3")),
+    cg_race_bin = ifelse(primarycg_race_ethnicity == "White_not_Hispanic", 0, 1)
+  )
+
+# center variables
+ppositive_graph_long$ppositive_c <- scale(ppositive_graph_long$ppositive, center = TRUE, scale = FALSE)[,1]
+ppositive_graph_long$age_c  <- scale(ppositive_graph_long$child_age_years_w1, center = TRUE, scale = FALSE)[,1]
+ppositive_graph_long$female_c <- scale(ifelse(ppositive_graph_long$child_sex_w1 == "female", 1, 0), center = TRUE, scale = FALSE)[,1]
+ppositive_graph_long$cgrace_c <- scale(ppositive_graph_long$cg_race_bin, center = TRUE, scale = FALSE)[,1]
+ppositive_graph_long$ELA_group_c <- scale(ppositive_graph_long$ELA_group_w1, center = TRUE, scale = FALSE)[,1]
+
+# specify model with compelte data
+ppositivechange_model <- lmerTest::lmer(
+  alex_idcom_mean_score ~ time:ppositive_c + time + ppositive_c + ELA_group_c + age_c + female_c + cgrace_c  + (1 | participant_id),
+  data = ppositive_graph_long
+)
+
+summary(ppositivechange_model)
+emmeans::emtrends(ppositivechange_model, ~time, var = "ppositive_c")
+
+library(effects)
+
+mean_pp <- mean(sample$ppositive, na.rm=TRUE) # mean is -0.011
+sd(sample$ppositive, na.rm=TRUE) # sd is 23.48
+sd1up <- mean(sample$ppositive, na.rm=TRUE) + sd(sample$ppositive, na.rm=TRUE) # 89.73
+sd1down <- mean(sample$ppositive, na.rm=TRUE) - sd(sample$ppositive, na.rm=TRUE) # 42.767
+
+# Generate effect data
+effects_ppositive <- effect(
+  term = "time:ppositive_c",
+  mod = ppositivechange_model,
+  xlevels = list(
+    timepoint0 = c('w1', 'w3'),
+    ppositive_c = c(sd1down, sd1up)  # -1 SD and +1 SD
+  )
+)
+
+effectsdata_ppositive <- as.data.frame(effects_ppositive)
+
+effectsdata_ppositive$ppositive_c <- factor(
+  effectsdata_ppositive$ppositive_c,
+  levels = c(sd1down, sd1up),
+  labels = c("-1SD parenting factor", "+1SD parenting factor")
+)
+
+emmeans::emmeans(ppositivechange_model, ~ time | ppositive_c, at = list(ppositive_c = c(sd1down, mean_pp, sd1up))) # significant decrease across time at noderate and high levels of positive/warm parenting, n.s. for low
+# to get the slopes and 95% CIs, subtract w1 from w3 values within each of the values of ppositive
+
+ppositive_graph_long <- ppositive_graph_long %>%
+  mutate(ELA_group_w1_f = factor(ELA_group_w1, 
+                                levels = c(0, 1), 
+                                labels = c("Comparison", "crEA-Exposed")))
+
+#yellow and green colors
+dark2_cols <- RColorBrewer::brewer.pal(8, "Dark2")[c(5, 6)]
+
+# Plot with both effect predictions and raw datapoints
+ppos_plot <- ggplot() +
+  #geom_point(data = ppositive_graph_long, aes(x = time, y = alex_idcom_mean_score, group = participant_id,
+  #color = ELA_group_w1_f), alpha = 0.7, position = position_jitter(width = 0.05, height = 0)) +
+  #geom_line(data = ppositive_graph_long, aes(x = time, y = alex_idcom_mean_score, color = ELA_group_w1_f, group = participant_id), size = 1, alpha=0.5) +
+  # Predicted effects
+  geom_point(data = effectsdata_ppositive, aes(x = time, y = fit, group = ppositive_c), size = 3) +
+  geom_line(data = effectsdata_ppositive, aes(x = time, y = fit, group = ppositive_c, linetype = ppositive_c), size = 1) +
+  scale_linetype_manual(
+    name = "Simple Slopes",
+    values = c("solid", "dotted")
+  ) +
+  xlab("Timepoint") + 
+  scale_x_discrete(
+  breaks = c('w1', 'w3'),
+  labels = c("Baseline", "Followup"),
+  expand = c(0, 0.3)
+) + 
+  ylab("Alexithymia") +
+  labs(color = "crEA-Exposure Group") + 
+  #scale_color_brewer(palette = "Spectral") +
+  scale_color_manual(
+    name = "crEA-Exposure Group",
+    values = c("Comparison" = dark2_cols[1], "crEA-Exposed" = dark2_cols[2])
+  ) +
+  ggtitle("Positive/Warm Parenting") +
+  theme_bw() + theme(panel.grid.major = element_blank(),
+                         panel.grid.minor = element_blank(),
+                         aspect.ratio = .6,
+                         panel.border = element_rect(
+                           color = "black",  
+                           size = 0.5),
+                         axis.title = element_text(size = 13),
+                         axis.text = element_text(size = 11),
+                        plot.title = element_text(hjust = 0.5, face="bold"),
+                        legend.position = "bottom")
+```
+
+### Poscom: Latent Growth Model: Baseline and Change over time differences
+```{r}
+model_poscom <- '
+  # Growth factors
+  i =~ 1*alex_idcom_mean_score_w1 + 1*alex_idcom_mean_score_w3
+  s =~ 0*alex_idcom_mean_score_w1 + 1*alex_idcom_mean_score_w3
+
+  # Residual variance constrained equal (required with 2 timepoints)
+  alex_idcom_mean_score_w1 ~~ r*alex_idcom_mean_score_w1
+  alex_idcom_mean_score_w3 ~~ r*alex_idcom_mean_score_w3
+
+  # Caregiving and covariates predicting growth factors
+  i ~ bo*1 + b_pp*poscom + b_group*ELA_group_w1 + b_age*child_age_years_w1 + b_sex*female + b_race*primarycg_poc + b_format*format
+  s ~ g1*1 + g_pp*poscom  + g_group*ELA_group_w1 + g_age*child_age_years_w1 + g_sex*female + g_race*primarycg_poc + g_format*format
+
+  # Covariance between growth factors (residual after prediction)
+  i ~~ s
+  '
+  
+fit_poscom <- growth(model_poscom,
+                          data = sample,
+                          missing = "fiml",
+                          estimator = "MLR",
+                          cluster = "family_id")
+
+summary(fit_poscom, fit.measures = TRUE, estimates = TRUE, rsquare = TRUE, standardized=TRUE)
+standardizedSolution(fit_poscom, type = "std.all", ci=TRUE, level = .95)
+
+# run model without poscom outliers
+sample_noposcom_out <- sample %>%
+  dplyr::filter(!(participant_id %in% poscom_outlier_ids$participant_id))
+
+
+fit_poscom_noout <- growth(model_poscom,
+                          data = sample_noposcom_out,
+                          missing = "fiml",
+                          estimator = "MLR",
+                          cluster = "family_id")
+summary(fit_poscom_noout, fit.measures = TRUE, estimates = TRUE, rsquare = TRUE, standardized=TRUE) # no longer effect on baseline alex
+standardizedSolution(fit_poscom_noout, type = "std.all", ci=TRUE, level = .95)
+
+# graph effect on slope to visualize
+# make a long format dataset with alexithymia and timepoint, ppositive, age at w1, sex, race/ethnicity
+poscom_graph_long <- data %>%
+  dplyr::select(participant_id, poscom, alex_idcom_mean_score_w1, alex_idcom_mean_score_w3, child_sex_w1, child_age_years_w1, primarycg_race_ethnicity, ELA_group_w1) %>%
+  pivot_longer(
+    cols = c(alex_idcom_mean_score_w1, alex_idcom_mean_score_w3),
+    names_to = "time",
+    values_to = "alex_idcom_mean_score"
+  ) %>% dplyr::mutate(
+    time = ifelse(time=="alex_idcom_mean_score_w1", "w1", "w3"),
+    time = factor(time, levels = c("w1", "w3")),
+    cg_race_bin = ifelse(primarycg_race_ethnicity == "White_not_Hispanic", 0, 1)
+  )
+
+# center variables
+poscom_graph_long$poscom_c <- scale(poscom_graph_long$poscom, center = TRUE, scale = FALSE)[,1]
+poscom_graph_long$age_c  <- scale(poscom_graph_long$child_age_years_w1, center = TRUE, scale = FALSE)[,1]
+poscom_graph_long$female_c <- scale(ifelse(poscom_graph_long$child_sex_w1 == "female", 1, 0), center = TRUE, scale = FALSE)[,1]
+poscom_graph_long$cgrace_c <- scale(poscom_graph_long$cg_race_bin, center = TRUE, scale = FALSE)[,1]
+poscom_graph_long$ELA_group_c <- scale(poscom_graph_long$ELA_group_w1, center = TRUE, scale = FALSE)[,1]
+
+# specify model with compelte data
+poscomchange_model <- lmerTest::lmer(
+  alex_idcom_mean_score ~ time:poscom_c + time + poscom_c + ELA_group_c + age_c + female_c + cgrace_c  + (1 | participant_id),
+  data = poscom_graph_long
+)
+
+summary(poscomchange_model)
+emmeans::emtrends(poscomchange_model, ~time, var = "poscom_c")
+
+library(effects)
+
+mean_poscom <- mean(sample$poscom, na.rm=TRUE) # mean is -0.011
+sd(sample$poscom, na.rm=TRUE) # sd is 23.48
+sd1up_pos <- mean(sample$poscom, na.rm=TRUE) + sd(sample$poscom, na.rm=TRUE) # 89.73
+sd1down_posc <- mean(sample$poscom, na.rm=TRUE) - sd(sample$poscom, na.rm=TRUE) # 42.767
+
+# Generate effect data
+effects_poscom <- effect(
+  term = "time:poscom_c",
+  mod = poscomchange_model,
+  xlevels = list(
+    timepoint0 = c('w1', 'w3'),
+    poscom_c = c(sd1down_posc, sd1up_pos)  # -1 SD and +1 SD
+  )
+)
+
+effects_poscom <- as.data.frame(effects_poscom)
+
+effects_poscom$poscom_c <- factor(
+  effects_poscom$poscom_c,
+  levels = c(sd1down_posc, sd1up_pos),
+  labels = c("-1SD parenting factor", "+1SD parenting factor")
+)
+
+#emmeans::emmeans(ppositivechange_model, ~ time | ppositive_c, at = list(ppositive_c = c(sd1down, mean_pp, sd1up))) # significant decrease across time at noderate and high levels of positive/warm parenting, n.s. for low
+# to get the slopes and 95% CIs, subtract w1 from w3 values within each of the values of ppositive
+
+poscom_graph_long <- poscom_graph_long %>%
+  mutate(ELA_group_w1_f = factor(ELA_group_w1, 
+                                levels = c(0, 1), 
+                                labels = c("Comparison", "crEA-Exposed")))
+
+#yellow and green colors
+dark2_cols <- RColorBrewer::brewer.pal(8, "Dark2")[c(5, 6)]
+
+library(ggsignif)
+
+# Plot with both effect predictions and raw datapoints
+ggplot() +
+  #geom_point(data = ppositive_graph_long, aes(x = time, y = alex_idcom_mean_score, group = participant_id,
+  #color = ELA_group_w1_f), alpha = 0.7, position = position_jitter(width = 0.05, height = 0)) +
+  #geom_line(data = ppositive_graph_long, aes(x = time, y = alex_idcom_mean_score, color = ELA_group_w1_f, group = participant_id), size = 1, alpha=0.5) +
+  # Predicted effects
+  geom_point(data = effects_poscom, aes(x = time, y = fit, group = poscom_c), size = 3) +
+  geom_line(data = effects_poscom, aes(x = time, y = fit, group = poscom_c, linetype = poscom_c), size = 1) +
+  scale_linetype_manual(
+    name = "Simple Slopes",
+    values = c("solid", "dotted")
+  ) +
+  xlab("Timepoint") + 
+  scale_x_discrete(
+  breaks = c('w1', 'w3'),
+  labels = c("Baseline", "Followup"),
+  expand = c(0, 0.3)
+) + 
+  ylab("Alexithymia") +
+  labs(color = "crEA-Exposure Group") + 
+  #scale_color_brewer(palette = "Spectral") +
+  scale_color_manual(
+    name = "crEA-Exposure Group",
+    values = c("Comparison" = dark2_cols[1], "crEA-Exposed" = dark2_cols[2])
+  ) +
+  ggtitle("Positive Social Communication") +
+  geom_signif(
+  data = filter(poscom_graph_long, time == "w1"),
+  aes(x = ELA_group_w1_f, y = alex_idcom_mean_score),
+  comparisons = list(c("Comparison", "crEA-Exposed")),
+  annotations = "*",
+  y_position = 0.81,
+  tip_length = 0.02
+) +
+  #annotate("text", x = "w1", y = 0.81, label = "*", size = 8, fontface = "bold") +
+  theme_bw() + theme(panel.grid.major = element_blank(),
+                         panel.grid.minor = element_blank(),
+                         aspect.ratio = .6,
+                         panel.border = element_rect(
+                           color = "black",  
+                           size = 0.5),
+                         axis.title = element_text(size = 13),
+                         axis.text = element_text(size = 11),
+                        plot.title = element_text(hjust = 0.5, face="bold"),
+                        legend.position = "bottom")
+```
+
+### Parenting Moderation Plots
+```{r}
+library(patchwork)
+
+combined_plot <- ppos_plot + poscom_plot +
+  plot_annotation(tag_levels = 'A') +
+  plot_layout(ncol = 2 , guides = "collect") &
+  theme(legend.position = "bottom")
+
+ggsave("figures/parenting_plot.png", plot = combined_plot, width = 10, height = 6, dpi = 1000)
+```
+
+
+## 2d: MicroFIMS and Alexithymia
+### Latent Growth Model: Baseline and Change over time differences
+```{r}
+model_pactive.cpositi <- '
+  # Growth factors
+  i =~ 1*alex_idcom_mean_score_w1 + 1*alex_idcom_mean_score_w3
+  s =~ 0*alex_idcom_mean_score_w1 + 1*alex_idcom_mean_score_w3
+
+  # Residual variance constrained equal (required with 2 timepoints)
+  alex_idcom_mean_score_w1 ~~ r*alex_idcom_mean_score_w1
+  alex_idcom_mean_score_w3 ~~ r*alex_idcom_mean_score_w3
+
+  # Caregiving and covariates predicting growth factors
+  i ~ bo*1 + b_pc*pactive.cpositi + b_group*ELA_group_w1 + b_age*child_age_years_w1 + b_sex*female + b_race*primarycg_poc + b_format*format
+  s ~ g1*1 + g_pc*pactive.cpositi  + g_group*ELA_group_w1 + g_age*child_age_years_w1 + g_sex*female + g_race*primarycg_poc + g_format*format
+
+  # Covariance between growth factors (residual after prediction)
+  i ~~ s
+  '
+  
+fit_pactive.cpositi <- growth(model_pactive.cpositi,
+                          data = sample,
+                          missing = "fiml",
+                          estimator = "MLR",
+                          cluster = "family_id")
+
+summary(fit_pactive.cpositi, fit.measures = TRUE, estimates = TRUE, rsquare = TRUE, standardized=TRUE)
+standardizedSolution(fit_pactive.cpositi, type = "std.all", ci=TRUE, level = .95)
+
+# run model without ppostivie outliers
+sample_nodyad_out <- sample %>%
+  dplyr::filter(!(participant_id %in% conting_outlier_ids$participant_id))
+
+
+fit_pactive.cpositi_noout <- growth(model_pactive.cpositi,
+                          data = sample_nodyad_out,
+                          missing = "fiml",
+                          estimator = "MLR",
+                          cluster = "family_id")
+summary(fit_pactive.cpositi_noout, fit.measures = TRUE, estimates = TRUE, rsquare = TRUE, standardized=TRUE) # no longer effect
+```
+
+# Exploratory Aim 3: Age Differences
+## Age*crEA group on alexithymia: growth model 
+```{r}
+# mean center predictors
+sample <- sample %>%
+  mutate(
+    group_c = as.vector(scale(ELA_group_w1, center=TRUE, scale=FALSE)),
+    age_c = as.vector(scale(child_age_years_w1, center=TRUE, scale=FALSE)),
+    # add interaction term to dataset
+     group_x_age = group_c*age_c
+  )
+
+# add to lgm 
+model_conditional_age <- '
+  # Growth factors
+  i =~ 1*alex_idcom_mean_score_w1 + 1*alex_idcom_mean_score_w3
+  s =~ 0*alex_idcom_mean_score_w1 + 1*alex_idcom_mean_score_w3
+
+  # Residual variance constrained equal (required with 2 timepoints)
+  alex_idcom_mean_score_w1 ~~ r*alex_idcom_mean_score_w1
+  alex_idcom_mean_score_w3 ~~ r*alex_idcom_mean_score_w3
+
+  # Caregiving and covariates predicting growth factors
+  i ~ group_x_age + group_c + age_c + child_sex_w1
+  s ~ group_x_age + group_c + age_c + child_sex_w1
+
+  # Covariance between growth factors (residual after prediction)
+  i ~~ s'
+
+fit_conditional_age <- growth(model_conditional_age,
+                          data = sample,
+                          missing = "fiml",
+                          estimator = "MLR",
+                          cluster = "family_id")
+
+summary(fit_conditional_age, fit.measures = TRUE, estimates = TRUE, rsquare = TRUE, standardized=TRUE)
+standardizedSolution(fit_conditional_age, type = "std.all", ci=TRUE, level = .95)
+```
+
+### Plot relationship between age and baseline alextihymia in crEA group
+```{r}
+# age and alexithymia at baseline in crEA group only
+cor.test(sample_ela$alex_idcom_mean_score_w1, sample_ela$child_age_years_w1)
+
+ggplot(sample_ela, aes(x = child_age_years_w1, y = alex_idcom_mean_score_w1)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(
+    x = "Child Age (years)",
+    y = "Baseline Alexithymia",
+    title = "Age and Baseline Alexithymia in crEA Group"
+  ) +
+  theme_classic() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  )
+
+sample_ela %>% dplyr::count(!is.na(alex_idcom_mean_score_w1))
+
+sample <- sample %>%
+  mutate(
+    ELA_group_w1_f = factor(
+      ELA_group_w1,
+      levels = c(0, 1),
+      labels = c("Comparison", "crEA-Exposed")
+    )
+  )
+
+# full sample with interaction
+ggplot(sample, aes(
+  x = child_age_years_w1,
+  y = alex_idcom_mean_score_w1,
+  color = ELA_group_w1_f
+)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(
+    title = "Age and Baseline Alexithymia in Each Group",
+    x = "Child Age (years)",
+    y = "Baseline Alexithymia",
+    color = "ELA group"
+  ) +
+  theme_classic() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  )
+```
+
+## Interaction of age * years in stable care on alexithymia
+```{r}
+# add interaction term to dataset
+sample_ela <- sample_ela %>%
+  mutate(
+    years_sc_c = as.vector(scale(years_in_stable_care_new, center=TRUE, scale=FALSE)),
+    age_c = as.vector(scale(child_age_years_w1, center=TRUE, scale=FALSE)),
+    years_sc_x_age = age_c*years_sc_c
+  )
+
+# add to lavaan model
+model_timeinstablecare_age <- '
+  # Caregiving and covariates predicting growth factors
+  alex_idcom_mean_score_w1 ~ years_sc_x_age + age_c + num_transitions_new + years_sc_c + child_sex_w1
+'
+
+fit_model_timeinstablecare_age <- sem(model_timeinstablecare_age,
+                              data = sample_ela,
+                              missing = "fiml",
+                              estimator = "MLR",
+                              cluster = "family_id")
+
+summary(fit_model_timeinstablecare_age, fit.measures = TRUE, estimates = TRUE, rsquare = TRUE, standardized=TRUE)
+standardizedSolution(fit_model_timeinstablecare_age, type = "std.all", ci=TRUE, level = .95)
+```
+
+## Interaction of age * ss on alexithymia
+```{r}
+# mean center predictors
+sample <- sample %>%
+  mutate(
+    ss_c = as.vector(scale(ss_score_w1, center=TRUE, scale=FALSE)),
+    #already added: age_c = as.vector(scale(child_age_years_w1, center=TRUE, scale=FALSE)),
+    # add interaction term to dataset
+     ss_x_age = ss_c*age_c
+  )
+
+# add to lgm 
+model_ss_conditional_age <- '
+  # Growth factors
+  i =~ 1*alex_idcom_mean_score_w1 + 1*alex_idcom_mean_score_w3
+  s =~ 0*alex_idcom_mean_score_w1 + 1*alex_idcom_mean_score_w3
+
+  # Residual variance constrained equal (required with 2 timepoints)
+  alex_idcom_mean_score_w1 ~~ r*alex_idcom_mean_score_w1
+  alex_idcom_mean_score_w3 ~~ r*alex_idcom_mean_score_w3
+
+  # Caregiving and covariates predicting growth factors
+  i ~ ss_x_age + ss_c + ELA_group_w1 + age_c + child_sex_w1 + child_race_ethnicity
+  s ~ ss_x_age + ss_c  + ELA_group_w1 + age_c + child_sex_w1 + child_race_ethnicity
+
+  # Covariance between growth factors (residual after prediction)
+  i ~~ s'
+
+fit_ss_conditional_age <- growth(model_ss_conditional_age,
+                          data = sample,
+                          missing = "fiml",
+                          estimator = "MLR",
+                          cluster = "family_id")
+
+summary(fit_ss_conditional_age, fit.measures = TRUE, estimates = TRUE, rsquare = TRUE, standardized=TRUE)
+standardizedSolution(fit_ss_conditional_age, type = "std.all", ci=TRUE, level = .95)
+```
+
+## Interaction of age * ppositive on alexithymia
+```{r}
+# add interaction term to dataset
+sample <- sample %>%
+  mutate(
+    ppositive_c = as.vector(scale(ppositive, center=TRUE, scale=FALSE)),
+    ppositive_x_age = age_c*ppositive_c
+  )
+
+# add to lgm
+model_ppositive_age <- '
+  # Growth factors
+  i =~ 1*alex_idcom_mean_score_w1 + 1*alex_idcom_mean_score_w3
+  s =~ 0*alex_idcom_mean_score_w1 + 1*alex_idcom_mean_score_w3
+
+  # Residual variance constrained equal (required with 2 timepoints)
+  alex_idcom_mean_score_w1 ~~ r*alex_idcom_mean_score_w1
+  alex_idcom_mean_score_w3 ~~ r*alex_idcom_mean_score_w3
+
+  # Caregiving and covariates predicting growth factors
+  i ~ bo*1 + b_ppa*ppositive_x_age + b_pp*ppositive_c + b_group*ELA_group_w1 + b_age*age_c + b_sex*female + b_race*primarycg_poc
+  s ~ g1*1 + g_ppa*ppositive_x_age + g_pp*ppositive_c  + g_group*ELA_group_w1 + g_age*age_c + g_sex*female + g_race*primarycg_poc
+
+  # Covariance between growth factors (residual after prediction)
+  i ~~ s'
+  
+fit_ppositive_age <- growth(model_ppositive_age,
+                          data = sample,
+                          missing = "fiml",
+                          estimator = "MLR",
+                          cluster = "family_id")
+
+summary(fit_ppositive_age, fit.measures = TRUE, estimates = TRUE, rsquare = TRUE, standardized=TRUE)
+standardizedSolution(fit_ppositive_age, type = "std.all", ci=TRUE, level = .95)
+```
+
+## Interaction of age * poscom on alexithymia
+```{r}
+# add centered vars to df
+sample <- sample %>%
+  mutate(
+    poscom_c = as.vector(scale(poscom, center=TRUE, scale=FALSE)),
+    poscom_x_age = age_c*poscom_c
+  )
+
+# add to lgm
+model_poscom_age <- '
+  # Growth factors
+  i =~ 1*alex_idcom_mean_score_w1 + 1*alex_idcom_mean_score_w3
+  s =~ 0*alex_idcom_mean_score_w1 + 1*alex_idcom_mean_score_w3
+
+  # Residual variance constrained equal (required with 2 timepoints)
+  alex_idcom_mean_score_w1 ~~ r*alex_idcom_mean_score_w1
+  alex_idcom_mean_score_w3 ~~ r*alex_idcom_mean_score_w3
+
+  # Caregiving and covariates predicting growth factors
+  i ~ bo*1 + b_pc*poscom_x_age + b_pp*poscom_c + b_group*ELA_group_w1 + b_age*age_c + b_sex*female + b_race*primarycg_poc
+  s ~ g1*1 + g_pc*poscom_x_age + g_pp*poscom_c  + g_group*ELA_group_w1 + g_age*age_c + g_sex*female + g_race*primarycg_poc
+
+  # Covariance between growth factors (residual after prediction)
+  i ~~ s
+  '
+  
+fit_poscom_age <- growth(model_poscom_age,
+                          data = sample,
+                          missing = "fiml",
+                          estimator = "MLR",
+                          cluster = "family_id")
+
+summary(fit_poscom_age, fit.measures = TRUE, estimates = TRUE, rsquare = TRUE, standardized=TRUE)
+standardizedSolution(fit_poscom_age, type = "std.all", ci=TRUE, level = .95)
+```
+
+## Interaction of age * pactive.cpositiv on alexithymia
+```{r}
+# center vars
+sample <- sample %>%
+  mutate(
+    pactive.cpositi_c = as.vector(scale(pactive.cpositi, center=TRUE, scale=FALSE)),
+    pactive.cpositi_x_age = age_c*pactive.cpositi_c
+  )
+
+# add to lgm
+model_pactive.cpositi_age <- '
+  # Growth factors
+  i =~ 1*alex_idcom_mean_score_w1 + 1*alex_idcom_mean_score_w3
+  s =~ 0*alex_idcom_mean_score_w1 + 1*alex_idcom_mean_score_w3
+
+  # Residual variance constrained equal (required with 2 timepoints)
+  alex_idcom_mean_score_w1 ~~ r*alex_idcom_mean_score_w1
+  alex_idcom_mean_score_w3 ~~ r*alex_idcom_mean_score_w3
+
+  # Caregiving and covariates predicting growth factors
+  i ~ bo*1 + b_pca*pactive.cpositi_x_age + b_pc*pactive.cpositi_c + b_group*ELA_group_w1 + b_age*age_c + b_sex*female + b_race*primarycg_poc
+  s ~ g1*1 + g_pca*pactive.cpositi_x_age + g_pc*pactive.cpositi_c  + g_group*ELA_group_w1 + g_age*age_c + g_sex*female + g_race*primarycg_poc
+
+  # Covariance between growth factors (residual after prediction)
+  i ~~ s
+  '
+  
+fit_pactive.cpositi_age <- growth(model_pactive.cpositi_age,
+                          data = sample,
+                          missing = "fiml",
+                          estimator = "MLR",
+                          cluster = "family_id")
+
+summary(fit_pactive.cpositi_age, fit.measures = TRUE, estimates = TRUE, rsquare = TRUE, standardized=TRUE)
+standardizedSolution(fit_pactive.cpositi_age, type = "std.all", ci=TRUE, level = .95)
+```

@@ -1,0 +1,155 @@
+TITLE:	Mom CFA of positive/warm from Richmond et al 2020
+-negative task;
+DATA:	FILE IS MBB FIMS negative final w numid.csv;
+VARIABLE:	NAMES ARE 
+participant_id
+X
+secondary_id
+MBB_family_id
+Interaction_Type
+involve_task_mother_master
+thought_clarity_mother_master
+confid_opinion_mother_master
+explain_posit_mother_master
+request_input_mother_master
+listens_mother_master
+off_task_mother_master
+receptive_mother_master
+eye_contact_mother_master
+physical_contact_mother_master
+tolerates_differences_mother_master
+withdrawal_conflict_mother_master
+attempted_resolution_mother_master
+intensity_freq_pos_affect_mother_master
+intensity_pos_affect_mother_master
+freq_pos_affect_mother_master
+intensity_freq_neg_affect_mother_master
+freq_neg_affect_mother_master
+intensity_aggressive_affect_mother_master
+freq_aggressive_affect_mother_master
+intensity_dysphoric_mother_master
+freq_dysphoric_mother_master
+warmth_mother_master
+supportive_mother_master
+humor_mother_master
+anger_mother_master
+dominance_mother_master
+pressures_agree_mother_master
+promotion_dialogue_mother_master
+structuring_task_mother_master
+promote_autonomy_mother_master
+involve_task_child_master
+thought_clarity_child_master
+confid_opinion_child_master
+explain_posit_child_master
+request_input_child_master
+listens_child_master
+off_task_child_master
+receptive_child_master
+maturity_child_master
+needy_child_master
+eye_contact_child_master
+physical_contact_child_master
+tolerates_differences_child_master
+withdrawal_conflict_child_master
+attempted_resolution_child_master
+intensity_freq_pos_affect_child_master
+intensity_pos_affect_child_master
+freq_pos_affect_child_child_master
+intensity_freq_neg_affect_child_master
+freq_neg_affect_child_master
+intensity_aggressive_affect_child_master
+freq_aggressive_affect_child_master
+intensity_dysphoric_child_master
+freq_dysphoric_child_master
+warmth_child_master
+supportive_child_master
+humor_child_master
+anger_child_master
+dominance_child_master
+pressures_agree_child_master
+highly_animated_child_master
+positive_escalation_master
+negative_escalation_master
+family_atmosphere_master
+attunement_master
+mutuality_master
+conflict_level_master
+participant_age
+participant_sex
+participant_gender
+participant_group
+anxious_depressed
+anxious_depressed_t
+anxious_depressed_percentile
+withdrawn_depressed
+withdrawn_depressed_t
+withdrawn_depressed_percentile
+somatic_complaints
+somatic_complaints_t
+somatic_complaints_percentile
+social_problems
+social_problems_t
+social_problems_percentile
+thought_problems
+thought_problems_t
+thought_problems_percentile
+attention_problems
+attention_problems_t
+attention_problems_percentile
+rule_breaking_behavior
+rule_breaking_behavior_t
+rule_breaking_behavior_percentile
+aggressive_behavior
+aggressive_behavior_t
+aggressive_behavior_percentile
+other_problems
+gi_symptoms
+internalizing
+internalizing_t
+internalizing_percentile
+externalizing
+externalizing_t
+externalizing_percentile
+total
+total_t
+total_percentile
+rcads_score
+rcads_parentproxy_score
+numid;
+
+usevariables= 
+freq_pos_affect_mother_master 
+intensity_freq_pos_affect_mother_master
+intensity_pos_affect_mother_master
+warmth_mother_master
+humor_mother_master
+physical_contact_mother_master
+supportive_mother_master;
+
+idvariable = numid;
+
+missing = all(999);
+analysis:
+!estimator = mlr; !pos variables not skewed/kurtotic;
+
+model:
+ppositive by freq_pos_affect_mother_master* 
+intensity_freq_pos_affect_mother_master
+intensity_pos_affect_mother_master
+warmth_mother_master
+humor_mother_master
+physical_contact_mother_master
+supportive_mother_master; !note supportive loads onto comp2 + 3 in richmond;
+
+intensity_freq_pos_affect_mother_master with freq_pos_affect_mother_master; 
+intensity_freq_pos_affect_mother_master with intensity_pos_affect_mother_master;
+freq_pos_affect_mother_master with intensity_pos_affect_mother_master;
+
+ppositive@1;
+
+savedata:
+file is ppositivescores_negtask.csv;
+save = fscores;
+
+OUTPUT:	TECH1 STANDARDIZED modindices;

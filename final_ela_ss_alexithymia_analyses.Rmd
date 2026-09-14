@@ -235,6 +235,111 @@ identify_outliers(sample, years_in_stable_care_new) # no outliers
 identify_outliers(sample, alex_idcom_mean_score_w3) #  no outliers
 ```
 
+### Visualize predictor variables with outliers
+```{r}
+# create alexithymia change variable
+sample <- sample %>%
+  mutate(alex_change = alex_idcom_mean_score_w3 - alex_idcom_mean_score_w1) # positive means higher alexithymia at W3 than W1, negative means higher alexithymia at W1 than W3
+
+# graph poscom vs baseline alexithymia (5 outliers: -2.206, -4.719, -2.280, -2.739, -3.800)
+
+sample %>%
+  mutate(
+    Color = case_when(
+      poscom %in% c(-2.206, -4.719, -2.280, -2.739, -3.800) ~ "Outliers",
+      TRUE ~ "Rest of Data"
+    )
+  ) %>%
+  ggplot(aes(x = poscom, y = alex_idcom_mean_score_w1, fill = Color, color= Color)) +
+  geom_point(
+    shape = 21,
+    size = 3.5,
+    alpha = 0.5
+  ) +
+  scale_color_manual(
+    values = c("Rest of Data" = "black", "Outliers" = "purple")
+  ) +
+  labs(
+    x = "Positive Social Communication",
+    y = "Baseline Alexithymia"
+  ) + 
+  theme_bw() +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor.y = element_blank())
+
+ggsave("figures/poscom_outliers.png", dpi = 1000, width = 6, height = 4)
+
+# graph positive/warm parenting vs alex change (3 positive/warm parenting outliers: -2.173, -2.706, -3.868)
+# those all have NA for W3 alexithymia, so cannot graph against alexithymia change
+# graph against baseline alexithymia?
+
+sample %>%
+  mutate(
+    Color = case_when(
+      ppositive %in% c(-2.173, -2.706, -3.868) ~ "Outliers",
+      TRUE ~ "Rest of Data"
+    )
+  ) %>%
+  ggplot(aes(x = ppositive, y = alex_idcom_mean_score_w1, fill = Color, color= Color)) +
+  geom_point(
+    shape = 21,
+    size = 3.5,
+    alpha = 0.5
+  ) +
+  scale_color_manual(
+    values = c("Rest of Data" = "black", "Outliers" = "purple")
+  ) +
+  labs(
+    x = "Positive/Warm Parenting",
+    y = "Alexithymia Change (Follow up - Baseline)"
+  ) + 
+  theme_bw() +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor.y = element_blank())
+
+test <- sample %>%
+  filter(!is.na(alex_change))
+
+# graph ESRB vs alex change (2 ESRB outliers: 0.50, 0.44)
+# cannot graph vs alex change bc the outliers have NA alexithymia W3
+
+sample %>%
+  mutate(
+    Color = case_when(
+      pactive.cpositi %in% c(0.50, 0.44) ~ "Outliers",
+      TRUE ~ "Rest of Data"
+    )
+  ) %>%
+  ggplot(aes(x = pactive.cpositi, y = alex_idcom_mean_score_w1, fill = Color, color= Color)) +
+  geom_point(
+    shape = 21,
+    size = 3.5,
+    alpha = 0.5
+  ) +
+  scale_color_manual(
+    values = c("Rest of Data" = "black", "Outliers" = "purple")
+  ) +
+  labs(
+    x = "ERSB",
+    y = "Alexithymia Change (Follow up - Baseline)"
+  ) + 
+  theme_bw() +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor.y = element_blank())
+
+max(test$pactive.cpositi, na.rm=TRUE)
+
+```
+
 ## Descriptive statistics
 ```{r}
 # create dataset with manuscript sample: children who have baseline alexithymia data
@@ -271,7 +376,7 @@ demo <- sample %>%
     adolescence_stage_w1 = factor(adolescence_stage_w1, levels = c("Pre-adolescence (<10)", "Early adolescence (10–12)", "Mid-adolescence (13–15)", "Late adolescence (16–18)")),
     adolescence_stage_w3 = factor(adolescence_stage_w3, levels = c("Pre-adolescence (<10)", "Early adolescence (10–12)", "Mid-adolescence (13–15)", "Late adolescence (16–18)"))
   ) %>% 
-  tbl_summary(include = c(ELA_group_w1, ela_3subgroup_str, format, child_race, child_race_ethnicity, child_sex_w1, primary_cg_education_w1, child_age_years_w1, primarycaregiver_race, federal_income_needs_primary_w1, adolescence_stage_w1, adolescence_stage_w3, alex_idcom_mean_score_w1, ss_score_w1, alex_idcom_mean_score_w3, ppositive, poscom, pactive.cpositi),
+  tbl_summary(include = c(ELA_group_w1, ela_3subgroup_str, format, child_race, child_race_ethnicity, child_sex_w1, primary_cg_education_w1, child_age_years_w1, child_age_w3, primarycaregiver_race, federal_income_needs_primary_w1, adolescence_stage_w1, adolescence_stage_w3, alex_idcom_mean_score_w1, ss_score_w1, alex_idcom_mean_score_w3, ppositive, poscom, pactive.cpositi),
               statistic = list(
                 all_continuous() ~ "{mean} ({sd}); Range: {min} - {max}"
     ))
@@ -291,7 +396,7 @@ demo_groups <- sample %>%
     adolescence_stage_w1 = factor(adolescence_stage_w1, levels = c("Pre-adolescence (<10)", "Early adolescence (10–12)", "Mid-adolescence (13–15)", "Late adolescence (16–18)")),
     adolescence_stage_w3 = factor(adolescence_stage_w3, levels = c("Pre-adolescence (<10)", "Early adolescence (10–12)", "Mid-adolescence (13–15)", "Late adolescence (16–18)"))
   ) %>% 
-  tbl_summary(by = ELA_group_w1, include = c(ELA_group_w1, ela_3subgroup_str, format, child_race, child_race_ethnicity, child_sex_w1, primary_cg_education_w1, child_age_years_w1, primarycaregiver_race, federal_income_needs_primary_w1, adolescence_stage_w1, adolescence_stage_w3, alex_idcom_mean_score_w1, alex_idcom_mean_score_w3, ss_score_w1, years_in_stable_care_new, ppositive, poscom, pactive.cpositi),
+  tbl_summary(by = ELA_group_w1, include = c(ELA_group_w1, ela_3subgroup_str, format, child_race, child_race_ethnicity, child_sex_w1, primary_cg_education_w1, child_age_years_w1, child_age_w3, primarycaregiver_race, federal_income_needs_primary_w1, adolescence_stage_w1, adolescence_stage_w3, alex_idcom_mean_score_w1, alex_idcom_mean_score_w3, ss_score_w1, years_in_stable_care_new, ppositive, poscom, pactive.cpositi),
               statistic = list(
                 all_continuous() ~ "{mean} ({sd}); Range: {min} - {max}"
     ))
@@ -802,6 +907,120 @@ summary(fit_followup, fit.measures = TRUE, estimates = TRUE, rsquare = TRUE, sta
 standardizedSolution(fit_followup, type = "std.all", ci=TRUE, level = .95)
 ```
 
+## Figure 1: Graph to Illustrate Change over Time Differences
+95% CI for repeated measures from http://www.cookbook-r.com/Graphs/Plotting_means_and_error_bars_(ggplot2) 
+```{r}
+# create a long format dataset with multiple rows for each id (alexithymia, wave, age)
+# it's easier to just separate into different variables, convert to long, and then merge rather than trying to convert w multiple
+alex_long <- data %>% dplyr::select(
+  participant_id,
+  Wave_1 = alex_idcom_mean_score_w1,
+  Wave_3 = alex_idcom_mean_score_w3,
+  ELA_group = ELA_group_w1
+)
+alex_long <- gather(alex_long, key = "Wave", value = "alex_idcom_mean", -c(participant_id, ELA_group))
+
+age_long <- data %>% dplyr::select(
+  participant_id,
+  Wave_1 = child_age_years_w1,
+  Wave_3 = child_age_w3
+)
+
+age_long <- gather(age_long, key = "Wave", value = "child_age", -participant_id)
+
+data_long <- age_long %>% left_join(alex_long, join_by(participant_id, Wave))
+
+data_long <- data_long %>% 
+  dplyr::mutate(
+    wave_num = case_when(
+      Wave == "Wave_1" ~ 1,
+      Wave == "Wave_3" ~ 3
+    )
+  )
+
+# compute 95% CIs for repeated measures vars
+
+# overall trajectory of alexithymia
+ggplot(data_long, aes(wave_num, alex_idcom_mean, group = participant_id)) +
+  geom_line(alpha = 0.3) + # add individual line with transparency
+  stat_smooth(aes(group = 1), method = "lm", se = TRUE) + 
+  stat_summary( # add average line
+    aes(group = 1),
+    fun = mean,
+    geom = "line",
+    linewidth = 1.5,
+    color = "red"
+  ) +
+  theme_bw() + # nice theme
+  labs(x = "Study Wave", y = "Alexithymia") # nice labels
+
+ggsave("figures/alex_trajectories_wave.pdf", height=4, width=6, dpi=1000)
+
+ggplot(data_long, aes(x = child_age, y = alex_idcom_mean, group = participant_id)) +
+  geom_line(alpha = 0.4) + # add individual line with transparency
+  stat_smooth(aes(group = 1), method = "lm", se = TRUE, color="red") +
+  theme_bw() + # nice theme
+  labs(x = "Child Age (years)", y = "Alexithymia") # nice labels
+
+ggsave("figures/alex_trajectories_age.pdf", height=4, width=6, dpi=1000)
+
+# trajectories by group
+
+#make new labels for facet wrap plot
+clin.labs <- c(
+  "0" = "Comparison Group", 
+  "1" = "crEA-Exposed Group")
+
+data_long$ELA_group_f <- as.factor(data_long$ELA_group)
+
+dark2_cols <- RColorBrewer::brewer.pal(8, "Dark2")[c(5, 6)]
+
+
+#graph the data by group with best-fit line across time (rename axes and legend, label the timepoints you care about)
+ggplot(data_long, aes(x=wave_num,y=alex_idcom_mean, group=participant_id)) + 
+  geom_line(alpha = 0.4, color="black") +
+  stat_smooth(aes(group = 1, color = ELA_group_f), method = "lm", se = TRUE) +
+  stat_summary( # add average line
+    aes(group = 1, color=ELA_group_f),
+    fun = mean,
+    geom = "line",
+    linewidth = 1.5
+  ) +
+  facet_wrap(~factor(ELA_group_f, levels = c("1", "0")), labeller=as_labeller(clin.labs)) +
+   scale_x_continuous(
+    breaks = c(1, 3),
+    labels = c("Baseline", "Followup"),
+    expand = expansion(mult = c(0.1, 0.1))
+  ) + 
+  scale_color_manual(values=dark2_cols) +
+  xlab("Timepoint") + ylab("Alexithymia") +
+  theme_bw() +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor.y = element_blank()) +
+  theme(legend.position = "none") 
+
+ggsave("figures/wave_trajectories_by_group_final.png", height=4, width=6, dpi=1000)
+
+ggplot(data_long, aes(x=child_age,y=alex_idcom_mean, group=participant_id)) + 
+  geom_line(alpha = 0.4) +
+  stat_smooth(aes(group = 1), method = "lm", se = TRUE, color="red") +
+  facet_wrap(~ELA_group_f, labeller=as_labeller(clin.labs)) +
+  scale_color_brewer(palette = "Dark2") +
+  xlab("Child Age (years)") + ylab("Alexithymia") +
+  theme_bw() +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor.y = element_blank()) +
+  theme(legend.position = "none") 
+
+ggsave("figures/age_trajectories_by_group.pdf", height=4, width=6, dpi=1000)
+```
+
 # Aim 2: Caregiver-Child Interaction Dynamics and Alexithymia
 
 ## 2a: Time in Stable Care and Alexithymia
@@ -834,6 +1053,50 @@ fit_model_timeinstablecare <- sem(model_timeinstablecare,
 summary(fit_model_timeinstablecare, fit.measures = TRUE, estimates = TRUE, rsquare = TRUE, standardized=TRUE)
 standardizedSolution(fit_model_timeinstablecare, type = "std.all", ci=TRUE, level = .95)
 ```
+
+### Figure 2: Time in Stable Care Graph
+```{r}
+data_ela_resid <- data_ela %>% 
+  dplyr::filter(!is.na(alex_idcom_mean_score_w1) & !is.na(child_age_years_w1) & !is.na(child_sex_w1) & !is.na(years_in_stable_care_new) & !is.na(num_transitions_new))
+
+#create residual for alexithymia after removing variance associated with covariates
+alex_resid <- resid(lm(alex_idcom_mean_score_w1 ~ num_transitions_new + child_age_years_w1 + child_sex_w1, data = data_ela_resid))
+
+stablecare_resid <- resid(lm(years_in_stable_care_new ~ num_transitions_new + child_age_years_w1 + child_sex_w1, data = data_ela_resid))
+
+data_ela_resid <- data_ela_resid %>% 
+  mutate(
+    alex_resid = resid(alex_resid),
+    stablecare_resid = resid(stablecare_resid)
+  )
+
+# duration of stable care (raw)
+data_ela_resid %>% 
+ggplot(aes(stablecare_resid, alex_resid))+
+  geom_jitter(alpha=0.7) +
+  geom_smooth(method='lm', color=RColorBrewer::brewer.pal(8, "Dark2")[6], fill="black", alpha=0.2
+) +
+  xlab("Time In Stable Caregiving Environment (residuals)") +
+  ylab("Baseline Alexithymia (residuals)") +
+  theme_minimal() + #white background
+  theme(text = element_text(size = 12), axis.text.x=element_text(colour="black")) + 
+  theme_minimal() + 
+  theme(
+    text = element_text(size = 12),
+    panel.grid = element_blank(),
+    
+    # Draw a full box, but keep ticks visible
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.5),
+    
+    # Make sure ticks are drawn above the box
+    axis.ticks = element_line(color = "black", linewidth = 0.8),
+    axis.text = element_text(color = "black")
+  ) +
+  coord_cartesian(clip = "off")
+
+ggsave("alexi_stablecare_final.png", dpi=1000, height=5, width=6)
+```
+
 
 ## 2b: Attachment Security and Alexithymia
 ### Latent Growth Model: Baseline and Change over time differences
